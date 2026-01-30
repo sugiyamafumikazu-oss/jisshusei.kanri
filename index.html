@@ -1,0 +1,152 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+# ==========================================
+# 1. データ準備（フジリンクス管理簿からのデータ抽出）
+# ==========================================
+# 本来はExcelファイルを読み込みますが、ここでは提供されたデータを元に
+# 構造化データとして定義します。
+
+# リストA: 転籍実習生・プロパー実習生
+trainees_data = [
+    {"所属": "㈱ふじおやま", "氏名": "VU TRUNG KIEN", "生年月日": "2004/3/20", "区分": "P", "上陸日": "2023/4/14", "在留資格": "技能実習2号", "在留期限": "2026/4/15", "備考": ""},
+    {"所属": "㈱久遠", "氏名": "LUU VAN LINH", "生年月日": "1999/9/20", "区分": "P", "上陸日": "2024/11/19", "在留資格": "技能実習1号", "在留期限": "2025/11/19", "備考": ""},
+    {"所属": "㈱韮山産業", "氏名": "DOAN THI THAO", "生年月日": "1997/1/4", "区分": "T", "上陸日": "2024/3/11", "在留資格": "技能実習1号", "在留期限": "2025/3/11", "備考": "育児休暇中：帰国"},
+    {"所属": "㈱鈴和製作所", "氏名": "HO TAN HAI", "生年月日": "1999/9/19", "区分": "T", "上陸日": "2024/3/11", "在留資格": "技能実習2号", "在留期限": "2026/3/14", "備考": ""},
+    {"所属": "沼津海産物", "氏名": "TRAN VAN NHAT", "生年月日": "2004/3/13", "区分": "T", "上陸日": "2023/9/14", "在留資格": "技能実習2号", "在留期限": "2026/9/17", "備考": "失踪 退職：2025/12/15付"},
+    {"所属": "沼津海産物", "氏名": "NGUYEN VAN HOANG", "生年月日": "2002/9/1", "区分": "T", "上陸日": "2022/6/20", "在留資格": "技能実習2号", "在留期限": "2025/6/21", "備考": "特定技能へ移行⇒資格変更完了2025/6/17"},
+]
+
+# リストB: 特定技能者
+ssw_data = [
+    {"所属": "㈱久遠", "氏名": "PHAM THI PHUONG", "生年月日": "1997/4/27", "区分": "S", "許可日": "2023/3/27", "在留資格": "特定技能1号", "在留期限": "2026/4/9", "備考": ""},
+    {"所属": "沼津海産物", "氏名": "NGUYEN VAN HOANG", "生年月日": "2002/9/1", "区分": "S", "許可日": "2025/6/27", "在留資格": "特定技能1号", "在留期限": "2026/6/27", "備考": "技能実習⇒特定技能へ変更"},
+    {"所属": "㈱久遠", "氏名": "NGUYEN THI NHUNG", "生年月日": "2000/9/5", "区分": "S", "許可日": "2022/7/27", "在留資格": "特定技能1号", "在留期限": "2025/7/27", "備考": "退職 R7.2帰国"},
+]
+
+# リストC: 技能検定結果
+exam_data = [
+    {"氏名": "VU TRUNG KIEN", "生年月日": "2004/3/20", "受検級": "3級", "合否": "合格", "受験日": "2025/10/24"},
+    {"氏名": "HO TAN HAI", "生年月日": "1999/9/19", "受検級": "3級", "合否": "予定", "受験日": "2025/7/29"},
+    {"氏名": "NGUYEN VAN HOANG", "生年月日": "2002/9/1", "受検級": "専門級", "合否": "合格", "受験日": "試験済み"},
+]
+
+# リストD: 資格変更・更新申請進捗
+app_data = [
+    {"氏名": "HO TAN HAI", "生年月日": "1999/9/19", "申請区分": "資格変更", "申請日": "2025/3/4", "審査完了": "2025/3/11", "新カード受領": "2025/3/19"},
+    {"氏名": "VU TRUNG KIEN", "生年月日": "2004/3/20", "申請区分": "期間更新", "申請日": "2025/3/7", "審査完了": "2025/3/13", "新カード受領": ""},
+]
+
+# DataFrame化
+df_trainees = pd.DataFrame(trainees_data)
+df_ssw = pd.DataFrame(ssw_data)
+df_exam = pd.DataFrame(exam_data)
+df_app = pd.DataFrame(app_data)
+
+# ==========================================
+# 2. 統合ロジックの実装
+# ==========================================
+
+# 2-1. マージ用キー（氏名+生年月日）の作成関数
+def create_key(df):
+    # 表記ゆれ防止のため、スペース削除・大文字化してキーを作成
+    return df["氏名"].str.replace(" ", "").str.upper() + df["生年月日"]
+
+df_trainees["Key"] = create_key(df_trainees)
+df_ssw["Key"] = create_key(df_ssw)
+df_exam["Key"] = create_key(df_exam)
+df_app["Key"] = create_key(df_app)
+
+# 2-2. 実習生と特定技能の統合（縦結合・重複処理）
+# 統合のルール: 特定技能リストにある人は、特定技能の情報を優先（最新）とする
+merged_base = pd.merge(df_trainees, df_ssw, on="Key", how="outer", suffixes=("_実習", "_特技"))
+
+# データの優先選択ロジック
+def resolve_conflict(row, col_name):
+    # 特定技能側のデータがあればそれを採用、なければ実習生側を採用
+    val_ssw = row.get(f"{col_name}_特技")
+    val_trainee = row.get(f"{col_name}_実習")
+    
+    if pd.notna(val_ssw) and val_ssw != "":
+        return val_ssw
+    return val_trainee
+
+# 主要カラムの統合
+cols_to_merge = ["氏名", "生年月日", "所属", "在留資格", "在留期限", "備考"]
+for col in cols_to_merge:
+    merged_base[col] = merged_base.apply(lambda row: resolve_conflict(row, col), axis=1)
+
+# 入国日/許可日の統合（ID生成用）
+merged_base["基準日"] = merged_base.apply(lambda row: row["許可日"] if pd.notna(row.get("許可日")) else row["上陸日"], axis=1)
+merged_base["区分"] = merged_base.apply(lambda row: resolve_conflict(row, "区分"), axis=1)
+
+# 2-3. 検定・申請情報の紐付け（横結合）
+final_df = pd.merge(merged_base, df_exam[["Key", "受検級", "合否"]], on="Key", how="left")
+final_df = pd.merge(final_df, df_app[["Key", "申請区分", "申請日", "審査完了", "新カード受領"]], on="Key", how="left")
+
+# ==========================================
+# 3. ID自動生成とステータス判定
+# ==========================================
+
+# 3-1. ID生成: [西暦下2桁][区分]-[連番]
+def generate_id(row):
+    try:
+        date_obj = datetime.strptime(row["基準日"], "%Y/%m/%d")
+        year_str = date_obj.strftime("%y")
+    except:
+        year_str = "00" # 日付不明な場合のデフォルト
+    
+    # 簡単な連番生成（実際は同年の既存IDを確認して最大値+1する処理が必要）
+    # ここではハッシュ値を元に擬似的な番号を振ります
+    unique_num = abs(hash(row["Key"])) % 999 + 1
+    return f"{year_str}{row['区分']}-{unique_num:03d}"
+
+final_df["社員ID"] = final_df.apply(generate_id, axis=1)
+
+# 3-2. 現在ステータス判定
+def determine_status(row):
+    note = str(row["備考"])
+    app_status = str(row["申請日"])
+    card_status = str(row["新カード受領"])
+    
+    if "退職" in note or "帰国" in note:
+        return "退職/帰国"
+    elif "失踪" in note:
+        return "失踪"
+    elif pd.notna(row["新カード受領"]) and row["新カード受領"] != "":
+        return "手続完了"
+    elif pd.notna(row["申請日"]) and row["申請日"] != "":
+        return "申請中"
+    else:
+        return "在職"
+
+final_df["ステータス"] = final_df.apply(determine_status, axis=1)
+
+# ==========================================
+# 4. データの整理と出力
+# ==========================================
+
+# 表示する列の選定と並び替え
+output_columns = [
+    "社員ID", "氏名", "生年月日", "所属", 
+    "在留資格", "在留期限", 
+    "受検級", "合否",          # 検定情報
+    "申請区分", "申請日", "ステータス", # 進捗・状態
+    "備考"
+]
+
+output_df = final_df[output_columns].sort_values("社員ID")
+
+# CSVファイルとして保存
+csv_filename = "fujilinks_integrated_ledger.csv"
+output_df.to_csv(csv_filename, index=False, encoding="utf-8-sig")
+
+# プレビュー表示
+print(f"File Generated: {csv_filename}")
+print(output_df.to_markdown(index=False))
+
+# Excel互換のための補足：
+# 生成されたCSVはExcelで開くことができます。
+# Excelで開いた後、「条件付き書式」を設定することで、
+# 「ステータス」が「申請中」なら黄色、「退職」ならグレーといった色分けが可能になります。
